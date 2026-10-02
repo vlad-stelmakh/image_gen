@@ -13,8 +13,8 @@ from openai import APIStatusError, OpenAIError
 
 from bot.config import Settings
 from bot.db import UserSettings, UserSettingsStore
-from bot.defaults import MODELS
-from bot.images import ImageService
+from bot.defaults import MODELS, SIZES, qualities_for
+from bot.images import GeneratedImage, ImageService
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ HELP_TEXT = (
     "Если подписи нет, я попрошу её следующим сообщением.\n\n"
     "Можно ответить текстом на уже отправленную картинку — "
     "я отредактирую её по этому описанию.\n\n"
-    "/my_settings — показать настройки и выбрать модель\n"
+    "/my_settings — настройки, модель, размер, качество и токены\n"
     "/cancel — отменить ожидающую правку"
 )
 
@@ -55,27 +55,36 @@ async def cmd_my_settings(message: Message, settings: Settings, users: UserSetti
     prefs = users.get_or_create(user.id, user.username or "")
     await message.answer(
         _settings_text(prefs, user.id in settings.ADMIN_USER_IDS),
-        reply_markup=_model_keyboard(prefs.model),
+        reply_markup=_settings_keyboard(prefs),
     )
 
 
-@router.callback_query(F.data.startswith("model:"))
-async def on_model_choice(query: CallbackQuery, settings: Settings, users: UserSettingsStore) -> None:
+@router.callback_query(F.data.startswith(("model:", "size:", "quality:")))
+async def on_setting_choice(query: CallbackQuery, settings: Settings, users: UserSettingsStore) -> None:
     user = query.from_user
     if not settings.can_use(user.id):
         await query.answer("Нет доступа", show_alert=True)
         return
-    model = (query.data or "").split(":", 1)[1]
-    if model not in MODELS:
-        await query.answer("Неизвестная модель", show_alert=True)
+    kind, _, value = (query.data or "").partition(":")
+    current = users.get_or_create(user.id, user.username or "")
+    if kind == "model" and value in MODELS:
+        prefs = users.set_model(user.id, user.username or "", value)
+        notice = f"Модель: {MODELS[value]}"
+    elif kind == "size" and value in SIZES:
+        prefs = users.set_size(user.id, user.username or "", value)
+        notice = f"Размер: {value}"
+    elif kind == "quality" and value in qualities_for(current.model):
+        prefs = users.set_quality(user.id, user.username or "", value)
+        notice = f"Качество: {value}"
+    else:
+        await query.answer("Недоступно для этой модели", show_alert=True)
         return
-    prefs = users.set_model(user.id, user.username or "", model)
     if isinstance(query.message, Message):
         await query.message.edit_text(
             _settings_text(prefs, user.id in settings.ADMIN_USER_IDS),
-            reply_markup=_model_keyboard(prefs.model),
+            reply_markup=_settings_keyboard(prefs),
         )
-    await query.answer(f"Модель: {MODELS[model]}")
+    await query.answer(notice)
 
 
 @router.message(Command("cancel"))
@@ -187,14 +196,15 @@ async def _generate_and_send(
     status = await message.answer("Генерирую картинку…")
     stop = _keep_uploading(message.bot, message.chat.id)
     try:
-        image = await images.generate(prompt, options)
+        generated = await images.generate(prompt, options)
     except Exception as exc:
         logger.exception("image generation failed")
         await status.edit_text(_error_text(exc))
         return
     finally:
         stop.set()
-    await _send_result(message, status, image, "image.jpg", prompt)
+    _remember_usage(users, options.user_id, generated)
+    await _send_result(message, status, generated.data, "image.jpg", prompt)
 
 
 async def _edit_and_send(
@@ -214,14 +224,15 @@ async def _edit_and_send(
     stop = _keep_uploading(message.bot, message.chat.id)
     try:
         source = await _download(message.bot, file_id)
-        image = await images.edit(source, prompt, filename, options)
+        generated = await images.edit(source, prompt, filename, options)
     except Exception as exc:
         logger.exception("image edit failed")
         await status.edit_text(_error_text(exc))
         return
     finally:
         stop.set()
-    await _send_result(message, status, image, "edited.jpg", prompt)
+    _remember_usage(users, options.user_id, generated)
+    await _send_result(message, status, generated.data, "edited.jpg", prompt)
 
 
 async def _send_result(
@@ -255,17 +266,48 @@ def _settings_text(prefs: UserSettings, is_admin: bool) -> str:
         f"Модель: {title}\n"
         f"ID модели: {prefs.model}\n"
         f"Размер: {prefs.size}\n"
-        f"Качество: {prefs.quality}\n\n"
-        "Модель выбирается кнопками ниже. По умолчанию — GPT Image 2."
+        f"Качество: {prefs.quality}\n"
+        f"Потрачено токенов: {_fmt_tokens(prefs.total_tokens)}\n"
+        f"вход {_fmt_tokens(prefs.input_tokens)}, выход {_fmt_tokens(prefs.output_tokens)}\n\n"
+        "Модель, размер и качество выбираются кнопками ниже."
     )
 
 
-def _model_keyboard(current: str) -> InlineKeyboardMarkup:
-    rows = []
+def _settings_keyboard(prefs: UserSettings) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
     for model_id, title in MODELS.items():
-        mark = "✓ " if model_id == current else ""
+        mark = "✓ " if model_id == prefs.model else ""
         rows.append([InlineKeyboardButton(text=f"{mark}{title}", callback_data=f"model:{model_id}")])
+    size_buttons = [
+        InlineKeyboardButton(
+            text=f"{'✓ ' if size == prefs.size else ''}{size}",
+            callback_data=f"size:{size}",
+        )
+        for size in SIZES
+    ]
+    rows.append(size_buttons[:2])
+    rows.append(size_buttons[2:])
+    quality_buttons = [
+        InlineKeyboardButton(
+            text=f"{'✓ ' if quality == prefs.quality else ''}{quality}",
+            callback_data=f"quality:{quality}",
+        )
+        for quality in qualities_for(prefs.model)
+    ]
+    for offset in range(0, len(quality_buttons), 3):
+        rows.append(quality_buttons[offset : offset + 3])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _fmt_tokens(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
+
+
+def _remember_usage(users: UserSettingsStore, user_id: int, generated: GeneratedImage) -> None:
+    try:
+        users.add_usage(user_id, generated.input_tokens, generated.output_tokens, generated.total_tokens)
+    except Exception:
+        logger.exception("failed to store token usage")
 
 
 def _user_settings(message: Message, users: UserSettingsStore) -> UserSettings:
