@@ -1,0 +1,8 @@
+services:
+  bot:
+    build: .
+    image: image-gen-bot
+    env_file:
+      - .env
+    restart: unless-stopped
+    init: true

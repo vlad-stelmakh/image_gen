@@ -25,28 +25,22 @@ cp .env.example .env
 
 | Переменная | Назначение |
 | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | токен Telegram-бота |
 | `OPENAI_API_KEY` | ключ OpenAI |
-| `OPENAI_IMAGE_MODEL` | `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1` или `gpt-image-1-mini` |
-| `OPENAI_IMAGE_SIZE` | `1024x1024`, `1024x1536`, `1536x1024` или `auto` |
-| `OPENAI_IMAGE_QUALITY` | `low`, `medium` или `high` |
+| `TELEGRAM_BOT_TOKEN` | токен Telegram-бота |
+| `ADMIN_USER_IDS` | Telegram ID администраторов через запятую |
+| `ALLOWED_TELEGRAM_USER_IDS` | Telegram ID пользователей, которым можно пользоваться ботом |
+
+Генерация и правка доступны администраторам и пользователям из `ALLOWED_TELEGRAM_USER_IDS`. Остальным бот отвечает отказом и присылает их Telegram ID. Списки задаются через запятую, например `123456789,987654321`.
 
 ## Запуск
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m bot.main
-```
-
-Нужен Python 3.11+.
-
-Docker:
+Нужны Docker и Docker Compose.
 
 ```bash
-docker build -t image-gen-bot .
-docker run --rm --env-file .env image-gen-bot
+cp .env.example .env
+docker compose up --build -d
 ```
 
-Файл `.env` в репозиторий не попадает.
+Логи: `docker compose logs -f`. Остановка: `docker compose down`.
+
+Файл `.env` в образ и в репозиторий не попадает. Compose передаёт его переменные в контейнер при старте.
