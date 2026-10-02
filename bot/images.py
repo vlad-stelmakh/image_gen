@@ -6,36 +6,31 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from bot.config import Settings
-
-
-MODEL = "gpt-image-2"
-SIZE = "1024x1024"
-QUALITY = "medium"
+from bot.db import UserSettings
 
 
 class ImageService:
     def __init__(self, settings: Settings) -> None:
         self._client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
-    async def generate(self, prompt: str) -> bytes:
+    async def generate(self, prompt: str, options: UserSettings) -> bytes:
         result = await self._client.images.generate(
-            model=MODEL,
+            model=options.model,
             prompt=prompt,
-            size=SIZE,
-            quality=QUALITY,
+            size=options.size,
+            quality=options.quality,
             output_format="jpeg",
         )
         return _decode_image(result)
 
-    async def edit(self, image: bytes, prompt: str, filename: str) -> bytes:
+    async def edit(self, image: bytes, prompt: str, filename: str, options: UserSettings) -> bytes:
         result = await self._client.images.edit(
-            model=MODEL,
+            model=options.model,
             image=(filename, image, _content_type(filename)),
             prompt=prompt,
-            size=SIZE,
-            quality=QUALITY,
+            size=options.size,
+            quality=options.quality,
             output_format="jpeg",
-            input_fidelity="high",
         )
         return _decode_image(result)
 

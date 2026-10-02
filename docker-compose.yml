@@ -6,3 +6,5 @@ services:
       - .env
     restart: unless-stopped
     init: true
+    volumes:
+      - ./data:/app/data

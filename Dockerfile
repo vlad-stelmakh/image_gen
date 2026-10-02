@@ -12,6 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot ./bot
 
-USER bot
+RUN mkdir -p /app/data && chown bot:bot /app/data
 
 CMD ["python", "-m", "bot.main"]
